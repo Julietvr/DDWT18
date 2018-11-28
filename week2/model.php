@@ -97,7 +97,7 @@ function get_breadcrumbs($breadcrumbs) {
  * @param array $navigation Array with as Key the page name and as Value the corresponding url
  * @return string html code that represents the navigation
  */
-function get_navigation($navigation){
+function get_navigation($navigation_template, $active){
     $navigation_exp = '
     <nav class="navbar navbar-expand-lg navbar-light bg-light">
     <a class="navbar-brand">Series Overview</a>
@@ -106,16 +106,16 @@ function get_navigation($navigation){
     </button>
     <div class="collapse navbar-collapse" id="navbarSupportedContent">
     <ul class="navbar-nav mr-auto">';
-    foreach ($navigation as $name => $info) {
-        if ($info[1]){
+    foreach ($navigation_template as $id => $array) {
+        if ($id == $active) {
             $navigation_exp .= '<li class="nav-item active">';
-            $navigation_exp .= '<a class="nav-link" href="'.$info[0].'">'.$name.'</a>';
-        }else{
+            $navigation_exp .= '<a class="nav-link" href="' . $array['url'] . '">' . $array['name'] . '</a>';
+        } else {
             $navigation_exp .= '<li class="nav-item">';
-            $navigation_exp .= '<a class="nav-link" href="'.$info[0].'">'.$name.'</a>';
+            $navigation_exp .= '<a class="nav-link" href="' . $array['url'] . '">' . $array['name'] . '</a>';
         }
-
         $navigation_exp .= '</li>';
+
     }
     $navigation_exp .= '
     </ul>
@@ -125,17 +125,19 @@ function get_navigation($navigation){
 }
 
 /**
- * Creats a Bootstrap table with a list of series
+ * Creates a Bootstrap table with a list of series
  * @param object $db pdo object
  * @param array $series with series from the db
  * @return string
  */
-function get_serie_table($series){
+function get_serie_table($pdo){
+    $series = get_series($pdo);
     $table_exp = '
     <table class="table table-hover">
-    <thead
+    <thead>
     <tr>
         <th scope="col">Series</th>
+        <th scope="col">Added by</th>
         <th scope="col"></th>
     </tr>
     </thead>
@@ -143,7 +145,8 @@ function get_serie_table($series){
     foreach($series as $key => $value){
         $table_exp .= '
         <tr>
-            <th scope="row">'.$value['name'].'</th>
+            <td scope="row">'.$value['name'].'</td>
+            <td scope="row">'.get_names($pdo, $value['user']).'</td>
             <td><a href="/DDWT18/week2/serie/?serie_id='.$value['id'].'" role="button" class="btn btn-primary">More info</a></td>
         </tr>
         ';
@@ -211,6 +214,7 @@ function get_serieinfo($pdo, $serie_id){
  * @return string
  */
 function get_error($feedback){
+    $feedback = json_decode($feedback, True);
     $error_exp = '
         <div class="alert alert-'.$feedback['type'].'" role="alert">
             '.$feedback['message'].'
@@ -258,12 +262,13 @@ function add_serie($pdo, $serie_info){
     }
 
     /* Add Serie */
-    $stmt = $pdo->prepare("INSERT INTO series (name, creator, seasons, abstract) VALUES (?, ?, ?, ?)");
+    $stmt = $pdo->prepare("INSERT INTO series (name, creator, seasons, abstract, user) VALUES (?, ?, ?, ?, ?)");
     $stmt->execute([
         $serie_info['Name'],
         $serie_info['Creator'],
         $serie_info['Seasons'],
-        $serie_info['Abstract']
+        $serie_info['Abstract'],
+        $_SESSION['user_id']
     ]);
     $inserted = $stmt->rowCount();
     if ($inserted ==  1) {
@@ -287,66 +292,72 @@ function add_serie($pdo, $serie_info){
  * @return array
  */
 function update_serie($pdo, $serie_info){
-    /* Check if all fields are set */
-    if (
-        empty($serie_info['Name']) or
-        empty($serie_info['Creator']) or
-        empty($serie_info['Seasons']) or
-        empty($serie_info['Abstract']) or
-        empty($serie_info['serie_id'])
-    ) {
-        return [
-            'type' => 'danger',
-            'message' => 'There was an error. Not all fields were filled in.'
-        ];
-    }
+    /* Check if users is allowed to edit */
 
-    /* Check data type */
-    if (!is_numeric($serie_info['Seasons'])) {
-        return [
-            'type' => 'danger',
-            'message' => 'There was an error. You should enter a number in the field Seasons.'
-        ];
-    }
-
-    /* Get current series name */
     $stmt = $pdo->prepare('SELECT * FROM series WHERE id = ?');
     $stmt->execute([$serie_info['serie_id']]);
     $serie = $stmt->fetch();
-    $current_name = $serie['name'];
+    $added_by = $serie['user'];
 
-    /* Check if serie already exists */
-    $stmt = $pdo->prepare('SELECT * FROM series WHERE name = ?');
-    $stmt->execute([$serie_info['Name']]);
-    $serie = $stmt->fetch();
-    if ($serie_info['Name'] == $serie['name'] and $serie['name'] != $current_name){
-        return [
-            'type' => 'danger',
-            'message' => sprintf("The name of the series cannot be changed. %s already exists.", $serie_info['Name'])
-        ];
-    }
+    if (check_allowance($added_by)) {
 
-    /* Update Serie */
-    $stmt = $pdo->prepare("UPDATE series SET name = ?, creator = ?, seasons = ?, abstract = ? WHERE id = ?");
-    $stmt->execute([
-        $serie_info['Name'],
-        $serie_info['Creator'],
-        $serie_info['Seasons'],
-        $serie_info['Abstract'],
-        $serie_info['serie_id']
-    ]);
-    $updated = $stmt->rowCount();
-    if ($updated ==  1) {
-        return [
-            'type' => 'success',
-            'message' => sprintf("Series '%s' was edited!", $serie_info['Name'])
-        ];
-    }
-    else {
-        return [
-            'type' => 'warning',
-            'message' => 'The series was not edited. No changes were detected'
-        ];
+        /* Check if all fields are set */
+        if (
+            empty($serie_info['Name']) or
+            empty($serie_info['Creator']) or
+            empty($serie_info['Seasons']) or
+            empty($serie_info['Abstract']) or
+            empty($serie_info['serie_id'])
+        ) {
+            return [
+                'type' => 'danger',
+                'message' => 'There was an error. Not all fields were filled in.'
+            ];
+        }
+        /* Check data type */
+        if (!is_numeric($serie_info['Seasons'])) {
+            return [
+                'type' => 'danger',
+                'message' => 'There was an error. You should enter a number in the field Seasons.'
+            ];
+        }
+        /* Get current series name */
+        $stmt = $pdo->prepare('SELECT * FROM series WHERE id = ?');
+        $stmt->execute([$serie_info['serie_id']]);
+        $serie = $stmt->fetch();
+        $current_name = $serie['name'];
+
+        /* Check if serie already exists */
+        $stmt = $pdo->prepare('SELECT * FROM series WHERE name = ?');
+        $stmt->execute([$serie_info['Name']]);
+        $serie = $stmt->fetch();
+        if ($serie_info['Name'] == $serie['name'] and $serie['name'] != $current_name) {
+            return [
+                'type' => 'danger',
+                'message' => sprintf("The name of the series cannot be changed. %s already exists.", $serie_info['Name'])
+            ];
+        }
+        /* Update Serie */
+        $stmt = $pdo->prepare("UPDATE series SET name = ?, creator = ?, seasons = ?, abstract = ? WHERE id = ?");
+        $stmt->execute([
+            $serie_info['Name'],
+            $serie_info['Creator'],
+            $serie_info['Seasons'],
+            $serie_info['Abstract'],
+            $serie_info['serie_id']
+        ]);
+        $updated = $stmt->rowCount();
+        if ($updated == 1) {
+            return [
+                'type' => 'success',
+                'message' => sprintf("Series '%s' was edited!", $serie_info['Name'])
+            ];
+        } else {
+            return [
+                'type' => 'warning',
+                'message' => 'The series was not edited. No changes were detected'
+            ];
+        }
     }
 }
 
@@ -360,21 +371,24 @@ function remove_serie($pdo, $serie_id){
     /* Get series info */
     $serie_info = get_serieinfo($pdo, $serie_id);
 
-    /* Delete Serie */
-    $stmt = $pdo->prepare("DELETE FROM series WHERE id = ?");
-    $stmt->execute([$serie_id]);
-    $deleted = $stmt->rowCount();
-    if ($deleted ==  1) {
-        return [
-            'type' => 'success',
-            'message' => sprintf("Series '%s' was removed!", $serie_info['name'])
-        ];
-    }
-    else {
-        return [
-            'type' => 'warning',
-            'message' => 'An error occurred. The series was not removed.'
-        ];
+    /* Check if user is allowed to delete */
+    if (check_allowance($serie_info['user'])) {
+
+        /* Delete Serie */
+        $stmt = $pdo->prepare("DELETE FROM series WHERE id = ?");
+        $stmt->execute([$serie_id]);
+        $deleted = $stmt->rowCount();
+        if ($deleted == 1) {
+            return [
+                'type' => 'success',
+                'message' => sprintf("Series '%s' was removed!", $serie_info['name'])
+            ];
+        } else {
+            return [
+                'type' => 'warning',
+                'message' => 'An error occurred. The series was not removed.'
+            ];
+        }
     }
 }
 
@@ -389,6 +403,20 @@ function count_series($pdo){
     $stmt->execute();
     $series = $stmt->rowCount();
     return $series;
+}
+
+
+/**
+ * Count the number of users that have contributed to Series Overview
+ * @param object $pdo database object
+ * @return mixed
+ */
+function count_users($pdo){
+    /* Get users */
+    $stmt = $pdo->prepare('SELECT * FROM users');
+    $stmt->execute();
+    $users = $stmt->rowCount();
+    return $users;
 }
 
 /**
@@ -406,9 +434,215 @@ function redirect($location){
  */
 function get_user_id(){
     session_start();
-    if (isset($_SESSION['user_id'])){
+    if (isset($_SESSION['user_id'])) {
         return $_SESSION['user_id'];
     } else {
         return False;
     }
+}
+
+/**
+ * Returns the first and last name of the user
+ * @param $pdo
+ * @param $user_id
+ * @return string
+ */
+function get_names($pdo, $user_id){
+    $stmt = $pdo->prepare('SELECT firstname, lastname FROM users WHERE id = ?');
+    $stmt->execute([$user_id]);
+    $user_info = $stmt->fetch();
+    $user_info_exp = Array();
+
+    /* Create array with htmlspecialchars */
+    foreach ($user_info as $key => $value){
+        $user_info_exp[$key] = htmlspecialchars($value);
+    }
+
+    $user_info_string = implode(" ", $user_info_exp);
+
+    return $user_info_string;
+}
+
+/**
+ * Registers the user and logs the user in when successful
+ * @param object $pdo database object
+ * @param array $form_data with POST data
+ * @return array feedback
+ */
+function register_user($pdo, $form_data){
+
+    /* Check if all fields are set */
+    if (
+        empty($form_data['username']) or
+        empty($form_data['password']) or
+        empty($form_data['firstname']) or
+        empty($form_data['lastname'])
+    ) {
+        return [
+            'type' => 'danger',
+            'message' => 'You should enter a username, password, first- and last name.'
+        ];
+    }
+
+    /* Check if user already exists */
+    try {
+        $stmt = $pdo->prepare('SELECT * FROM users WHERE username = ?');
+        $stmt->execute([$form_data['username']]);
+        $user_exists = $stmt->rowCount();
+    } catch (\PDOException $e) {
+        return [
+            'type' => 'danger',
+            'message' => sprintf('There was an error: %s', $e->getMessage())
+        ];
+    }
+
+    /* Return error message for existing username */
+    if (!empty($user_exists)) {
+        return [
+            'type' => 'danger',
+            'message' => 'The username you entered does already exists!'
+        ];
+    }
+
+    /* Hash password */
+    $password = password_hash($form_data['password'], PASSWORD_DEFAULT);
+
+    /* Save user to the database */
+    try {
+        $stmt = $pdo->prepare('INSERT INTO users (username, password, firstname, lastname) VALUES (?, ?, ?, ?)');
+        $stmt->execute([$form_data['username'], $password, $form_data['firstname'],
+            $form_data['lastname']]);
+        $user_id = $pdo->lastInsertId();
+    } catch (PDOException $e) {
+        return [
+            'type' => 'danger',
+            'message' => sprintf('There was an error: %s', $e->getMessage())
+        ];
+    }
+
+    /* Login user */
+    session_start();
+    $_SESSION['user_id'] = $user_id;
+    $feedback = [
+        'type' => 'success',
+        'message' => sprintf('%s, your account was successfully created!', get_names($pdo, $_SESSION['user_id']))
+    ];
+    redirect(sprintf('/DDWT18/week2/myaccount/?error_msg=%s', json_encode($feedback)));
+
+    return $feedback;
+}
+
+/**
+ * @param $pdo
+ * @param $form_data
+ * @return array
+ */
+
+function login_user($pdo, $form_data){
+
+    /* Check if all fields are set */
+    if (
+        empty($form_data['username']) or
+        empty($form_data['password'])
+    ) {
+        return [
+            'type' => 'danger',
+            'message' => 'You should enter a username and password.'
+        ];
+    }
+
+    /* Check if user exists */
+    try {
+        $stmt = $pdo->prepare('SELECT * FROM users WHERE username = ?');
+        $stmt->execute([$form_data['username']]);
+        $user_info = $stmt->fetch();
+    } catch (\PDOException $e) {
+        return [
+            'type' => 'danger',
+            'message' => sprintf('There was an error: %s', $e->getMessage())
+        ];
+    }
+
+    /* Return error message for wrong username */
+    if ( empty($user_info) ) {
+        return [
+            'type' => 'danger',
+            'message' => 'The username you entered does not exist!'
+        ];
+    }
+
+    /* Check password */
+    if ( !password_verify($form_data['password'], $user_info['password']) ){
+        return [
+            'type' => 'danger',
+            'message' => 'The password you entered is incorrect!'
+        ];
+    } else {
+        session_start();
+        $_SESSION['user_id'] = $user_info['id'];
+        $feedback = [
+            'type' => 'success',
+            'message' => sprintf('%s, you were logged in successfully!',
+                get_names($pdo, $_SESSION['user_id']))
+        ];
+        redirect(sprintf('/DDWT18/week2/myaccount/?error_msg=%s', json_encode($feedback)));
+    }
+    return $feedback;
+}
+
+/**
+ * Check login
+ * @return bool
+ */
+function check_login(){
+    session_start();
+    if (isset($_SESSION['user_id'])){
+        return True;
+    } else {
+        return False;
+    }
+}
+
+/**
+ * Logout, return feedback
+ * @return array
+ */
+function logout_user(){
+    session_destroy();
+    $feedback = [
+        'type' => 'success',
+        'message' => 'You were logged out successfully!'
+    ];
+    return $feedback;
+}
+
+/**
+ * Check if logged in user is the same as the one who created a serie
+ * @param $added_by
+ * @return bool
+ */
+function check_allowance($added_by){
+    if (!isset ($_SESSION)) {
+        session_start();
+        if (isset($_SESSION['user_id'])) {
+            if ($added_by == $_SESSION['user_id']) {
+                $display_buttons = True;
+            } else {
+                $display_buttons = False;
+            }
+        } else {
+            $display_buttons = False;
+        }
+    } else {
+        if (isset($_SESSION['user_id'])) {
+            if ($added_by == $_SESSION['user_id']) {
+                $display_buttons = True;
+            } else {
+                $display_buttons = False;
+            }
+        } else {
+            $display_buttons = False;
+        }
+    }
+    return $display_buttons;
 }

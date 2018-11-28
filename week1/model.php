@@ -352,8 +352,6 @@ function update_series($pdo, $serie_info){
             'message' => 'The series was not edited. No changes were detected'
         ];
     }
-
-
 }
 
 /**
